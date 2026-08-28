@@ -1,0 +1,22 @@
+{
+  "owner_ids": [],
+  "service_enabled": true,
+  "search_mode": "hashtag",
+  "delivery_mode": "group",
+  "read_button": true,
+  "welcome": {
+    "text": "",
+    "photo_file_id": null
+  },
+  "auto_delete": false,
+  "delete_time": 120,
+  "dump_channel": null,
+  "pm_search": true,
+  "pm_enabled": false,
+  "no_result_msg": "book not found",
+  "base_url": "https://annas-archive.pk",
+  "libgen_base_url": "http://libgen.la",
+  "connected_group_id": null,
+  "download_path": "",
+  "per_chat": {}
+}

@@ -1,0 +1,6 @@
+python-telegram-bot==20.7
+pymongo==4.6.1
+beautifulsoup4==4.14.3
+telethon==1.44.0
+curl_cffi==0.15.0
+cloudscraper==1.2.71
