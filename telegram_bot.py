@@ -149,11 +149,11 @@ FALLBACK_DOMAINS = [
 ]
 LIBGEN_SOURCE = "https://shadowlibraries.github.io/DirectDownloads/libgen/"
 LIBGEN_FALLBACK_DOMAINS = [
-    "http://libgen.li",
-    "http://libgen.vg",
-    "http://libgen.la",
-    "http://libgen.bz",
-    "http://libgen.gl",
+    "https://libgen.li",
+    "https://libgen.vg",
+    "https://libgen.la",
+    "https://libgen.bz",
+    "https://libgen.gl",
 ]
 
 
@@ -651,12 +651,12 @@ def _sync_get_direct_url(book_url: str) -> str:
     last_error = None
     for base in domains_to_try:
         ads_url = f"{base}/ads.php?md5={md5}"
-        req = urllib.request.Request(
-            ads_url, headers={"User-Agent": "Mozilla/5.0 (compatible; annadl/1.0)"}
-        )
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                html = resp.read().decode("utf-8", errors="replace")
+            import http_client
+            r = http_client.get(ads_url, timeout=15)
+            if r.status_code != 200:
+                raise ValueError(f"Libgen ads page returned {r.status_code}")
+            html = r.text
 
             m = re.search(r'href=[^>]*?(get\.php\?md5=[^\"\'> ]+)', html)
             if not m:
