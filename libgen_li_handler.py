@@ -21,7 +21,7 @@ def get_libgen_li_direct_link(ads_url: str) -> str | None:
 
     for url in _candidate_ads_urls(ads_url):
         try:
-            r = scraper.get(url, timeout=20)
+            r = scraper.get(url, timeout=30)
             if r.status_code != 200:
                 continue
 
@@ -33,6 +33,14 @@ def get_libgen_li_direct_link(ads_url: str) -> str | None:
                     a = h2.find_parent("a", href=True)
                     if a:
                         return urljoin(url, a["href"])
+
+            # Fallback: find any <a> with href containing get.php and text containing GET
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if "get.php" in href.lower():
+                    text = a.get_text(strip=True).upper()
+                    if "GET" in text:
+                        return urljoin(url, href)
 
         except Exception:
             continue

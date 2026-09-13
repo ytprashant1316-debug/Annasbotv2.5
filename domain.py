@@ -22,10 +22,9 @@ FALLBACK_DOMAINS = [
 
 FALLBACK_LIBGEN_MIRRORS = [
     "libgen.li",
+    "libgen.is",
     "libgen.vg",
     "libgen.la",
-    "libgen.bz",
-    "libgen.gl",
 ]
 
 _DOMAIN_RE = re.compile(r"https://(annas-archive\.[a-z]+)/\?r=")
