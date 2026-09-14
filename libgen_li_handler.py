@@ -10,37 +10,61 @@ from domain import get_libgen_mirrors
 LIBGEN_BASE = "https://libgen.li"
 
 
-def get_libgen_li_direct_link(ads_url: str) -> str | None:
+def _referer_for(url: str) -> str:
     """
-    Extract direct GET download link from a libgen ads page.
+    Libgen's ads.php returns a 200 with an EMPTY body unless the request
+    carries a Referer header from the same mirror. Return one per host.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        host = urlparse(LIBGEN_BASE).hostname or "libgen.li"
+    return f"https://{host}/index.php"
+
+
+def get_libgen_li_direct_link(ads_url: str, timeout: int = 30) -> str | None:
+    """
+    Extract the direct GET download link from a libgen ads page.
     Tries the given URL first, then falls back across mirror hosts.
-    Works with structure: <a><h2>GET</h2></a>
+
+    The page renders the link as  <a href="get.php?md5=<md5>&key=<KEY>"><h2>GET</h2></a>.
+    The  key  is required and short-lived, so use the returned link immediately.
+
+    A Referer header MUST be sent or the server responds with an empty body.
     """
 
     scraper = cloudscraper.create_scraper()
 
     for url in _candidate_ads_urls(ads_url):
         try:
-            r = scraper.get(url, timeout=30)
+            r = scraper.get(
+                url,
+                timeout=timeout,
+                headers={"Referer": _referer_for(url)},
+            )
             if r.status_code != 200:
                 continue
 
             soup = BeautifulSoup(r.text, "html.parser")
 
-            # Find <h2>GET</h2>
+            # Primary: <a href="get.php?..."><h2>GET</h2></a>
             for h2 in soup.find_all("h2"):
                 if h2.get_text(strip=True).upper() == "GET":
                     a = h2.find_parent("a", href=True)
-                    if a:
+                    if a and "get.php" in a["href"].lower():
                         return urljoin(url, a["href"])
 
-            # Fallback: find any <a> with href containing get.php and text containing GET
+            # Fallback: any <a> with href containing get.php and text containing GET
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 if "get.php" in href.lower():
                     text = a.get_text(strip=True).upper()
                     if "GET" in text:
                         return urljoin(url, href)
+
+            # Last resort: any get.php?md5= link on the page
+            for a in soup.find_all("a", href=True):
+                if "get.php" in a["href"].lower() and "md5=" in a["href"].lower():
+                    return urljoin(url, a["href"])
 
         except Exception:
             continue
@@ -93,7 +117,12 @@ def download_libgen_li_book(
 
 def _download_from_url(url: str, md5: str, dest_dir: str, timeout: int) -> str:
     scraper = cloudscraper.create_scraper()
-    response = scraper.get(url, stream=True, timeout=timeout)
+    response = scraper.get(
+        url,
+        stream=True,
+        timeout=timeout,
+        headers={"Referer": _referer_for(url)},
+    )
     if response.status_code != 200:
         raise RuntimeError(f"Libgen download failed with status {response.status_code}")
 

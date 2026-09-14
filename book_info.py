@@ -1,7 +1,7 @@
 # book_info.py
 
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -20,6 +20,12 @@ def _candidate_ads_urls(md5: str):
     return [f"https://{host}/ads.php?md5={md5}" for host in hosts]
 
 
+def _referer_for(url: str) -> str:
+    """ads.php renders its content only when a Referer header is sent."""
+    host = urlparse(url).hostname or "libgen.li"
+    return f"https://{host}/index.php"
+
+
 def fetch_book_info(md5: str):
     """
     Fetch and parse book info from a Libgen ads page (no Anna's Archive).
@@ -31,7 +37,12 @@ def fetch_book_info(md5: str):
     last_error = None
     for url in _candidate_ads_urls(md5):
         try:
-            r = http_client.get(url, timeout=25, cookies={})
+            r = http_client.get(
+                url,
+                timeout=25,
+                cookies={},
+                headers={"Referer": _referer_for(url)},
+            )
             if r.status_code != 200:
                 continue
             info = parse_book_info(r.text, url)

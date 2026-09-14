@@ -641,46 +641,28 @@ def _sync_get_direct_url(book_url: str) -> str:
         raise ValueError("Could not extract MD5 from book URL")
     md5 = md5_m.group(1)
 
-    primary_base = LIBGEN_BASE
-    domains_to_try = [primary_base]
-    for d in _discover_libgen_domains():
-        d_clean = d.rstrip("/")
-        if d_clean not in domains_to_try:
-            domains_to_try.append(d_clean)
+    from libgen_li_handler import get_libgen_li_direct_link
 
-    last_error = None
-    for base in domains_to_try:
-        ads_url = f"{base}/ads.php?md5={md5}"
-        try:
-            import http_client
-            r = http_client.get(ads_url, timeout=15)
-            if r.status_code != 200:
-                raise ValueError(f"Libgen ads page returned {r.status_code}")
-            html = r.text
+    ads_url = f"{LIBGEN_BASE.rstrip('/')}/ads.php?md5={md5}"
+    direct_url = get_libgen_li_direct_link(ads_url, timeout=25)
+    if not direct_url:
+        raise ValueError("Could not find get.php link in libgen ads page")
 
-            m = re.search(r'href=[^>]*?(get\.php\?md5=[^\"\'> ]+)', html)
-            if not m:
-                raise ValueError("Could not find get.php link in libgen ads page")
+    # Self-heal the active domain to whichever mirror actually served the link.
+    host = re.match(r"https?://([^/]+)", direct_url)
+    if host:
+        new_base = f"https://{host.group(1)}"
+        if new_base != LIBGEN_BASE:
+            LIBGEN_BASE = new_base
+            try:
+                cfg = _load_cfg()
+                cfg["libgen_base_url"] = new_base
+                _save_cfg(cfg)
+            except Exception:
+                pass
+            print(f"[libgen] Self-healed: Updated active Libgen domain to: {new_base}")
 
-            path = m.group(1)
-            direct_url = path if path.startswith("http") else urljoin(ads_url, path)
-
-            if base != LIBGEN_BASE:
-                LIBGEN_BASE = base
-                try:
-                    cfg = _load_cfg()
-                    cfg["libgen_base_url"] = base
-                    _save_cfg(cfg)
-                except Exception:
-                    pass
-                print(f"[libgen] Self-healed: Updated active Libgen domain to: {base}")
-
-            return direct_url
-        except Exception as e:
-            last_error = e
-            logging.warning(f"[libgen] Resolution failed via {base}: {e}")
-
-    raise last_error or ValueError("All Libgen mirrors failed to resolve the link")
+    return direct_url
 
 
 # ---------------------------------------------------------------------------
@@ -688,8 +670,15 @@ def _sync_get_direct_url(book_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _sync_download(url: str, dest_dir: str, on_progress=None) -> tuple:
+    from urllib.parse import urlparse as _urlparse
+    _origin = _urlparse(url)
+    _referer = f"{_origin.scheme}://{_origin.netloc}/"
     req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (compatible; annadl/1.0)"}
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; annadl/1.0)",
+            "Referer": _referer,
+        },
     )
     with urllib.request.urlopen(req, timeout=180) as resp:
         total = int(resp.headers.get("Content-Length", 0))
