@@ -22,10 +22,6 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InlineQueryResultArticle,
-    InputTextMessageContent,
-    InputMediaDocument,
-    InputFile,
     ChatMemberAdministrator,
     ChatMemberOwner,
 )
@@ -35,8 +31,6 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    InlineQueryHandler,
-    ChosenInlineResultHandler,
     filters,
     ContextTypes,
 )
@@ -127,9 +121,6 @@ dl_semaphore = asyncio.Semaphore(3)
 
 # In-memory per-user state:  user_id -> {"results": [...]}
 user_sessions: dict = {}
-
-# Inline result book cache: md5 -> book dict (for chosen-result delivery)
-_inline_books: dict = {}
 
 # Background index jobs:  user_id -> asyncio.Task
 _active_index_jobs: dict = {}
@@ -818,7 +809,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `#bookrequest <book>` / `#Requestion <book>` — alternate hashtags\n"
         "• Plain text — send book name directly\n"
         "• `/md5_<md5>` — download a book by its MD5 link\n"
-        "• Inline mode — type `@yourbot <book>` in any chat, pick a result\n"
         f"• `/stats` — show bot statistics\n"
     )
 
@@ -3347,276 +3337,6 @@ async def md5_download_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ---------------------------------------------------------------------------
-# Inline Mode (@bot <query>)
-# ---------------------------------------------------------------------------
-
-async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    iq = update.inline_query
-    if not iq or not iq.from_user:
-        return
-
-    query = (iq.query or "").strip()
-    user_id = iq.from_user.id
-    bot_info = await context.bot.get_me()
-
-    if _force_sub_enabled():
-        ok = await _is_force_sub_ok(context, user_id)
-        if not ok:
-            channel = _force_sub_channel()
-            results = [
-                InlineQueryResultArticle(
-                    id="forcesub",
-                    title="🔒 Force Subscribe Required",
-                    description=f"Join @{channel} before using inline search",
-                    input_message_content=InputTextMessageContent(
-                        f"🔒 To use *{bot_info.first_name}* inline, please subscribe:\n"
-                        f"👉 @{channel}\n\n"
-                        f"Open the bot in PM to verify.",
-                        parse_mode="Markdown",
-                    ),
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel}")
-                    ]]),
-                )
-            ]
-            await iq.answer(
-                results,
-                cache_time=0,
-                is_personal=True,
-                switch_pm_text="🔒 Join channel & verify",
-                switch_pm_parameter="forcesub",
-            )
-            return
-
-    if not query:
-        results = [
-            InlineQueryResultArticle(
-                id="help",
-                title="📖 How to use inline search",
-                description="Type a book title or author, then pick a result",
-                input_message_content=InputTextMessageContent(
-                    f"Type a book title or author after *@{bot_info.username}*.\n"
-                    f"Example: `@{bot_info.username} dune`",
-                    parse_mode="Markdown",
-                ),
-            )
-        ]
-        await iq.answer(results, cache_time=1, is_personal=True)
-        return
-
-    loop = asyncio.get_running_loop()
-    try:
-        found = await loop.run_in_executor(executor, lambda: _sync_search(query, 20))
-    except Exception as e:
-        logging.warning(f"[inline] search error: {e}")
-        found = []
-
-    if not found:
-        results = [
-            InlineQueryResultArticle(
-                id="noresult",
-                title="❌ No results",
-                description=f'Nothing found for "{query}"',
-                input_message_content=InputTextMessageContent(
-                    f"❌ No results for `{_esc(query)}`.\nTry a different title or check /help.",
-                    parse_mode="Markdown",
-                ),
-            )
-        ]
-        await iq.answer(results, cache_time=2, is_personal=True)
-        return
-
-    article_results = []
-    for b in found:
-        md5 = (b.get("md5") or "").lower()
-        if not md5 or not re.fullmatch(r"[a-fA-F0-9]{32}", md5):
-            continue
-        _inline_books[md5] = b
-        title = (b.get("title") or "Unknown").strip()
-        author = b.get("author") or "Unknown"
-        fmt = b.get("format") or "Unknown"
-        size = b.get("size") or "Unknown"
-        article_results.append(
-            InlineQueryResultArticle(
-                id=md5,
-                title=title[:128],
-                description=f"{author} • {fmt} • {size}",
-                input_message_content=InputTextMessageContent(
-                    f"📚 *{_esc(title)}*\n👤 {_esc(author)}\n📦 {fmt} · 📏 {size}",
-                    parse_mode="Markdown",
-                ),
-            )
-        )
-
-    await iq.answer(
-        article_results,
-        cache_time=30,
-        is_personal=True,
-        switch_pm_text="📥 Use in PM instead",
-        switch_pm_parameter="inline",
-    )
-
-
-async def _inline_deliver(update: Update, context: ContextTypes.DEFAULT_TYPE, md5: str, book: dict, inline_message_id=None):
-    loop = asyncio.get_running_loop()
-
-    if _force_sub_enabled() and not await _is_force_sub_ok(context, update.effective_user.id):
-        return
-
-    async with dl_semaphore:
-        direct_url = None
-        try:
-            direct_url = await loop.run_in_executor(
-                executor, lambda: _sync_get_direct_url(book["url"])
-            )
-            file_path, fname = await loop.run_in_executor(
-                executor,
-                lambda: _sync_download(direct_url, DL_PATH, None),
-            )
-        except Exception as e:
-            logging.warning(f"[inline] download failed {md5}: {e}")
-            book_page = book.get("url") or f"{BASE_URL}/md5/{md5}"
-            buttons = []
-            if direct_url:
-                buttons.append([InlineKeyboardButton("📥 Direct Download", url=direct_url)])
-            buttons.append([InlineKeyboardButton("📖 Book Page", url=book_page)])
-            try:
-                if inline_message_id:
-                    await context.bot.edit_message_text(
-                        inline_message_id=inline_message_id,
-                        text=f"⚠️ *Download failed* — get it via browser:\n{_esc(book['title'])}",
-                        parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup(buttons),
-                    )
-                else:
-                    await context.bot.send_message(
-                        chat_id=update.effective_user.id,
-                        text=f"⚠️ *Download failed* — get it via browser:\n{_esc(book['title'])}",
-                        parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup(buttons),
-                    )
-            except Exception:
-                pass
-            return
-
-    caption = (
-        f"📚 *{_esc(book['title'])}*\n"
-        f"👤 {_esc(book['author'])}  •  📅 {book['year']}"
-    )
-    try:
-        with open(file_path, "rb") as fh:
-            if inline_message_id:
-                await context.bot.edit_message_media(
-                    inline_message_id=inline_message_id,
-                    media=InputMediaDocument(
-                        media=InputFile(fh, filename=fname),
-                        filename=fname,
-                        caption=caption,
-                        parse_mode="Markdown",
-                    ),
-                )
-            else:
-                await context.bot.send_document(
-                    chat_id=update.effective_user.id,
-                    document=fh,
-                    filename=fname,
-                    caption=caption,
-                    parse_mode="Markdown",
-                )
-    except Exception as e:
-        logging.warning(f"[inline] send failed {md5}: {e}")
-        try:
-            if inline_message_id:
-                await context.bot.edit_message_text(
-                    inline_message_id=inline_message_id,
-                    text=f"✅ *Done!* {_esc(fname)} — start the bot in PM to receive files.",
-                    parse_mode="Markdown",
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=update.effective_user.id,
-                    text=f"✅ *Done!* {_esc(fname)} — could not attach the file here.",
-                    parse_mode="Markdown",
-                )
-        except Exception:
-            pass
-    finally:
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-
-
-async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chosen = update.chosen_inline_result
-    if not chosen or not chosen.from_user:
-        return
-
-    result_id = (chosen.result_id or "").strip()
-    if result_id in ("forcesub", "help", "noresult"):
-        return
-
-    md5 = result_id.lower()
-    if not re.fullmatch(r"[a-fA-F0-9]{32}", md5):
-        return
-
-    if not _is_service_enabled():
-        return
-
-    user_id = chosen.from_user.id
-
-    if _force_sub_enabled():
-        ok = await _is_force_sub_ok(context, user_id)
-        if not ok:
-            channel = _force_sub_channel()
-            try:
-                if chosen.inline_message_id:
-                    await context.bot.edit_message_text(
-                        inline_message_id=chosen.inline_message_id,
-                        text=f"🔒 *Force Subscribe Required*\n\nPlease join:\n👉 @{channel}\n\n"
-                             f"Then open the bot in PM and search again.",
-                        parse_mode="Markdown",
-                    )
-            except Exception:
-                pass
-            return
-
-    book = _inline_books.get(md5)
-    if not book:
-        loop = asyncio.get_running_loop()
-        try:
-            res = await loop.run_in_executor(executor, lambda: _sync_search(md5, 1))
-            if res:
-                book = res[0]
-        except Exception:
-            pass
-    if not book:
-        book = {
-            "title": f"Book_{md5[:8]}",
-            "author": "Unknown",
-            "year": "Unknown",
-            "language": "Unknown",
-            "format": "Unknown",
-            "size": "Unknown",
-            "md5": md5,
-            "url": f"{BASE_URL}/md5/{md5}",
-        }
-
-    inline_message_id = chosen.inline_message_id
-    try:
-        if inline_message_id:
-            await context.bot.edit_message_text(
-                inline_message_id=inline_message_id,
-                text=f"⏳ *Preparing download...*\n{_esc(book['title'])}",
-                parse_mode="Markdown",
-            )
-    except Exception:
-        pass
-
-    await _inline_deliver(update, context, md5, book, inline_message_id)
-
-
-# ---------------------------------------------------------------------------
 # Welcome message on new members joining
 # ---------------------------------------------------------------------------
 
@@ -3725,10 +3445,6 @@ def main():
     # Force-subscribe callbacks (admin toggle + user verify)
     app.add_handler(CallbackQueryHandler(forcesub_cb, pattern=r'^forcesub:(on|off)$'))
     app.add_handler(CallbackQueryHandler(forcesub_check_cb, pattern=r'^forcesub:check$'))
-
-    # Inline mode (@bot <query>)
-    app.add_handler(InlineQueryHandler(inline_query_handler))
-    app.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
 
     # Database source commands
     app.add_handler(CommandHandler("connectdb", wrap_gated(cmd_connectdb, allow_connect=True)))
