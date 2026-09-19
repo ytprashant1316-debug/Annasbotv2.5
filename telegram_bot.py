@@ -335,6 +335,8 @@ def _init_cfg():
         "owner_ids": [],
         "service_enabled": True,
         "search_mode": "all",
+        "pm_search_mode": "all",
+        "group_search_mode": "slash",
         "delivery_mode": "group",
         "read_button": True,
         "welcome": {},
@@ -540,6 +542,15 @@ def _is_service_enabled() -> bool:
 def _get_search_mode() -> str:
     """Returns: all | slash | hashtag | text"""
     return _get_cfg_value("search_mode", "all")
+
+
+def _get_search_mode_for(chat_type) -> str:
+    """Per-chat search mode. private -> pm_search_mode, groups -> group_search_mode."""
+    if chat_type == "private":
+        return _get_cfg_value("pm_search_mode", None) or _get_search_mode()
+    if chat_type in ("group", "supergroup"):
+        return _get_cfg_value("group_search_mode", None) or _get_search_mode()
+    return _get_search_mode()
 
 
 def _get_delivery_mode() -> str:
@@ -765,7 +776,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _register_pm_if_private(update)
-    search_mode = _get_search_mode()
+    pm_search_mode = _get_search_mode_for("private")
+    grp_search_mode = _get_search_mode_for("group")
     delivery_mode = _get_delivery_mode()
     service = "✅ online" if _is_service_enabled() else "🔴 offline"
     connected = _get_connected_group()
@@ -788,13 +800,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pm_search = _get_cfg_value("pm_search", True)
     pm_search_str = "✅ enabled" if pm_search else "❌ disabled"
 
-    mode_desc = {
-        "all": "All modes active",
-        "slash": "Only /search command",
-        "hashtag": "Only #request prefix",
-        "text": "Only plain text messages",
-    }.get(search_mode, search_mode)
-
     user_text = (
         "📚 *Anna's Archive Bot — Help*\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -814,7 +819,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\n━━━━━━━━━━━━━━━━━━━━\n"
             "*⚙️ Admin Commands*\n"
             "• `/mode pm|group` — set file delivery target\n"
-            "• `/mode search slash|hashtag|text|all` — search mode\n"
+            "• `/mode search <mode> [pm|group]` — search mode per chat\n"
             "• `/connect` — register this group as delivery target\n"
             "• `/disconnect` — disconnect the connected group\n"
             "• `/setwelcome <text>|off` — set or disable welcome message\n"
@@ -843,7 +848,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "*📊 Current Status*\n"
             f"• Service: {service}\n"
             f"• Delivery mode: `{delivery_mode}`\n"
-            f"• Search mode: `{search_mode}` — {mode_desc}\n"
+            f"• Search mode PM: `{pm_search_mode}` / Group: `{grp_search_mode}`\n"
             f"• PM searching: `{pm_search_str}`\n"
             f"• Connected group: {connected_str}\n"
             f"• Auto-delete in PM: `{auto_delete_str}`\n"
@@ -862,7 +867,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cfg = _load_cfg()
     service = "✅ online" if _is_service_enabled() else "🔴 offline"
-    search_mode = _get_search_mode()
+    pm_search_mode = _get_search_mode_for("private")
+    grp_search_mode = _get_search_mode_for("group")
     delivery_mode = _get_delivery_mode()
     connected = _get_connected_group()
     connected_str = f"`{connected}`" if connected else "None"
@@ -885,7 +891,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"• Service: {service}\n"
         f"• Delivery mode: `{delivery_mode}`\n"
-        f"• Search mode: `{search_mode}`\n"
+        f"• Search mode PM: `{pm_search_mode}` / Group: `{grp_search_mode}`\n"
         f"• Owners: {owner_str}\n"
         f"• PM enabled: {'✅ on' if pm_enabled else '❌ off'}\n"
         f"• PM searching: {'✅ on' if pm_search else '❌ off'}\n"
@@ -934,11 +940,13 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         delivery = _get_delivery_mode()
-        search = _get_search_mode()
+        pm_mode = _get_search_mode_for("private")
+        grp_mode = _get_search_mode_for("group")
         await update.message.reply_text(
             f"*Current modes:*\n"
             f"• Delivery: `{delivery}` — use `/mode pm` or `/mode group`\n"
-            f"• Search: `{search}` — use `/mode search slash|hashtag|text|all`",
+            f"• PM search: `{pm_mode}` — use `/mode search pm <mode>`\n"
+            f"• Group search: `{grp_mode}` — use `/mode search group <mode>`",
             parse_mode="Markdown"
         )
         return
@@ -956,9 +964,15 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args[0].lower() == "search":
         valid = ("slash", "hashtag", "text", "all")
         if len(args) < 2 or args[1].lower() not in valid:
-            current = _get_search_mode()
+            pm_mode = _get_search_mode_for("private")
+            grp_mode = _get_search_mode_for("group")
             await update.message.reply_text(
-                f"Usage: `/mode search slash|hashtag|text|all`\nCurrent: `{current}`\n\n"
+                f"Usage:\n"
+                f"• `/mode search <mode>` — set both PM & Group\n"
+                f"• `/mode search pm <mode>` — private chat only\n"
+                f"• `/mode search group <mode>` — groups only\n"
+                f"Current — PM: `{pm_mode}` | Group: `{grp_mode}`\n\n"
+                f"Valid modes:\n"
                 f"• `slash` — only `/search <query>`\n"
                 f"• `hashtag` — only `#request <query>` in groups\n"
                 f"• `text` — only plain text messages\n"
@@ -966,10 +980,24 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             return
+        if len(args) >= 3 and args[2].lower() in ("pm", "group"):
+            scope = args[2].lower()
+            search_mode = args[1].lower()
+            if scope == "pm":
+                _set_cfg_value("pm_search_mode", search_mode)
+            else:
+                _set_cfg_value("group_search_mode", search_mode)
+            await update.message.reply_text(
+                f"🔍 Search mode set for `{scope}`: `{search_mode}`",
+                parse_mode="Markdown"
+            )
+            return
         search_mode = args[1].lower()
         _set_cfg_value("search_mode", search_mode)
+        _set_cfg_value("pm_search_mode", search_mode)
+        _set_cfg_value("group_search_mode", search_mode)
         await update.message.reply_text(
-            f"🔍 Search mode set to: `{search_mode}`",
+            f"🔍 Search mode set for PM & Group: `{search_mode}`",
             parse_mode="Markdown"
         )
         return
@@ -977,7 +1005,8 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Usage:\n"
         "• `/mode pm|group` — delivery target\n"
-        "• `/mode search slash|hashtag|text|all` — search mode",
+        "• `/mode search <mode>` — search mode (PM & Group)\n"
+        "• `/mode search pm|group <mode>` — search mode per chat",
         parse_mode="Markdown"
     )
 
@@ -996,22 +1025,45 @@ async def cmd_set_search_mode(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     args = context.args
     if not args or args[0].lower() not in mode_map:
-        current = _get_search_mode()
+        pm_mode = _get_search_mode_for("private")
+        grp_mode = _get_search_mode_for("group")
         await update.message.reply_text(
-            f"Usage: `/setsearchmode <all|request|direct|command>`\n"
-            f"Current search mode: `{current}`\n\n"
+            f"Usage: `/setsearchmode <all|request|direct|command> [pm|group]`\n"
+            f"Current — PM: `{pm_mode}` | Group: `{grp_mode}`\n\n"
             f"• `all` — every search method works\n"
             f"• `request` — only #request / #bookrequest / #Requestion\n"
             f"• `direct` — any plain text is a search\n"
-            f"• `command` — only /search works",
+            f"• `command` — only /search works\n\n"
+            f"Add `pm` or `group` to change only that chat type.",
             parse_mode="Markdown"
         )
         return
 
     target = mode_map[args[0].lower()]
+    scope = None
+    if len(args) >= 2 and args[1].lower() in ("pm", "group"):
+        scope = args[1].lower()
+
+    if scope == "pm":
+        _set_cfg_value("pm_search_mode", target)
+        await update.message.reply_text(
+            f"🔍 Search mode set for `pm`: `{target}`",
+            parse_mode="Markdown"
+        )
+        return
+    if scope == "group":
+        _set_cfg_value("group_search_mode", target)
+        await update.message.reply_text(
+            f"🔍 Search mode set for `group`: `{target}`",
+            parse_mode="Markdown"
+        )
+        return
+
     _set_cfg_value("search_mode", target)
+    _set_cfg_value("pm_search_mode", target)
+    _set_cfg_value("group_search_mode", target)
     await update.message.reply_text(
-        f"🔍 Search mode set to: `{target}`",
+        f"🔍 Search mode set for PM & Group: `{target}`",
         parse_mode="Markdown"
     )
 
@@ -2758,11 +2810,12 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Private messages are currently disabled.")
             return
 
-    search_mode = _get_search_mode()
+    chat_type = update.effective_chat.type if update.effective_chat else None
+    search_mode = _get_search_mode_for(chat_type)
     if search_mode not in ("slash", "all"):
         await update.message.reply_text(
-            f"❌ Slash search is disabled. Current mode: `{search_mode}`\n"
-            f"An admin can change it with `/mode search all`",
+            f"❌ Slash search is disabled here. Current mode: `{search_mode}`\n"
+            f"An admin can change it with `/mode search <mode>`",
             parse_mode="Markdown"
         )
         return
@@ -2800,7 +2853,8 @@ async def msg_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat and update.effective_chat.type == "channel":
         return
 
-    search_mode = _get_search_mode()
+    chat_type = update.effective_chat.type if update.effective_chat else None
+    search_mode = _get_search_mode_for(chat_type)
 
     if re.match(r"^#(?:request|bookrequest|requestion)\b", text, re.IGNORECASE):
         if search_mode in ("hashtag", "all"):
