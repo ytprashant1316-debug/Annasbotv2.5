@@ -963,7 +963,19 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args[0].lower() == "search":
         valid = ("slash", "hashtag", "text", "all")
-        if len(args) < 2 or args[1].lower() not in valid:
+        scopes = ("pm", "group")
+
+        mode = None
+        scope = None
+        rest = [a.lower() for a in args[1:]]
+
+        if any(a in scopes for a in rest) and any(a in valid for a in rest):
+            scope = next(a for a in rest if a in scopes)
+            mode = next(a for a in rest if a in valid)
+        elif rest and rest[0] in valid:
+            mode = rest[0]
+
+        if not mode:
             pm_mode = _get_search_mode_for("private")
             grp_mode = _get_search_mode_for("group")
             await update.message.reply_text(
@@ -980,24 +992,25 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             return
-        if len(args) >= 3 and args[2].lower() in ("pm", "group"):
-            scope = args[2].lower()
-            search_mode = args[1].lower()
-            if scope == "pm":
-                _set_cfg_value("pm_search_mode", search_mode)
-            else:
-                _set_cfg_value("group_search_mode", search_mode)
+        if scope == "pm":
+            _set_cfg_value("pm_search_mode", mode)
             await update.message.reply_text(
-                f"🔍 Search mode set for `{scope}`: `{search_mode}`",
+                f"🔍 Search mode set for `pm`: `{mode}`",
                 parse_mode="Markdown"
             )
             return
-        search_mode = args[1].lower()
-        _set_cfg_value("search_mode", search_mode)
-        _set_cfg_value("pm_search_mode", search_mode)
-        _set_cfg_value("group_search_mode", search_mode)
+        if scope == "group":
+            _set_cfg_value("group_search_mode", mode)
+            await update.message.reply_text(
+                f"🔍 Search mode set for `group`: `{mode}`",
+                parse_mode="Markdown"
+            )
+            return
+        _set_cfg_value("search_mode", mode)
+        _set_cfg_value("pm_search_mode", mode)
+        _set_cfg_value("group_search_mode", mode)
         await update.message.reply_text(
-            f"🔍 Search mode set for PM & Group: `{search_mode}`",
+            f"🔍 Search mode set for PM & Group: `{mode}`",
             parse_mode="Markdown"
         )
         return
