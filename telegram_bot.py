@@ -344,6 +344,8 @@ def _init_cfg():
         "pm_search": True,
         "pm_enabled": True,
         "no_result_msg": None,
+        "force_sub_enabled": False,
+        "force_sub_channel": "prashantspages",
     }
     merged.update(local_cfg)
     merged.update(db_cfg)
@@ -802,6 +804,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `#bookrequest <book>` / `#Requestion <book>` — alternate hashtags\n"
         "• Plain text — send book name directly\n"
         "• `/md5_<md5>` — download a book by its MD5 link\n"
+        f"• `/stats` — show bot statistics\n"
     )
 
     is_admin = await _is_admin(update, context)
@@ -822,6 +825,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/pm_search on|off` — enable/disable searching in PM\n"
             "• `/enablepm|/disablepm` — accept/ignore private messages\n"
             "• `/read on|off` — enable/disable the read button setting\n"
+            "• `/forcesub on|off` — require users to join the channel before searching\n"
+            "  _Current channel: @prashantspages_\n"
             "• `/dump <channel_id>|off` — set or disconnect dump destination\n"
             "• `/broadcast <message>` — broadcast to all PM users\n"
             "  _Reply to any message to copy/forward it_\n"
@@ -891,6 +896,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Dump destination: {dump_str}\n"
         f"• Welcome message: {welcome_status}\n"
         f"• PM users registered: `{pm_users}`\n"
+        f"• Force subscribe: {'✅ ON' if _force_sub_enabled() else '❌ OFF'} → `@{_force_sub_channel()}`\n"
         f"• Domain: `{BASE_URL}`\n"
         f"• Libgen: `{LIBGEN_BASE}`",
         parse_mode="Markdown"
@@ -1381,6 +1387,222 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text,
             uids
         )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Force-subscribe & stats
+# ---------------------------------------------------------------------------
+
+def _force_sub_enabled() -> bool:
+    return bool(_get_cfg_value("force_sub_enabled", False))
+
+
+def _force_sub_channel() -> str:
+    ch = _get_cfg_value("force_sub_channel", "prashantspages") or "prashantspages"
+    return str(ch).lstrip("@").strip()
+
+
+def _forcesub_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Turn ON", callback_data="forcesub:on"),
+            InlineKeyboardButton("❌ Turn OFF", callback_data="forcesub:off"),
+        ],
+    ])
+
+
+def _forcesub_status_text() -> str:
+    status = "✅ ON" if _force_sub_enabled() else "❌ OFF"
+    ch = _force_sub_channel()
+    return (
+        "*Force Subscribe Settings*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Status: {status}\n"
+        f"• Channel: `@{ch}`\n\n"
+        "When ON, users must join the channel before they can search/download.\n\n"
+        "`/forcesub on|off` — toggle\n"
+        "`/forcesub channel <username>` — change channel\n\n"
+        "Toggle with the buttons below:"
+    )
+
+
+async def cmd_forcesub(update, context):
+    if not await _is_admin(update, context):
+        await update.message.reply_text("❌ You don't have permission to use this command.")
+        return
+
+    args = context.args
+    if args:
+        arg = args[0].lower()
+        if arg == "on":
+            _set_cfg_value("force_sub_enabled", True)
+            await update.message.reply_text(
+                "✅ Force subscribe is now *ON*.\nUsers must join the channel to use the bot.",
+                parse_mode="Markdown",
+                reply_markup=_forcesub_keyboard(),
+            )
+            return
+        if arg == "off":
+            _set_cfg_value("force_sub_enabled", False)
+            await update.message.reply_text(
+                "❌ Force subscribe is now *OFF*.\nAnyone can use the bot.",
+                parse_mode="Markdown",
+                reply_markup=_forcesub_keyboard(),
+            )
+            return
+        if arg == "channel":
+            if len(args) < 2:
+                await update.message.reply_text(
+                    "Usage: `/forcesub channel <username>`\nExample: `/forcesub channel prashantspages`",
+                    parse_mode="Markdown",
+                )
+                return
+            ch = args[1].lstrip("@")
+            _set_cfg_value("force_sub_channel", ch)
+            await update.message.reply_text(
+                f"✅ Force subscribe channel set to `@{ch}`.",
+                parse_mode="Markdown",
+                reply_markup=_forcesub_keyboard(),
+            )
+            return
+        await update.message.reply_text(
+            "Usage:\n`/forcesub on|off`\n`/forcesub channel <username>`",
+            parse_mode="Markdown",
+        )
+        return
+
+    await update.message.reply_text(
+        _forcesub_status_text(),
+        parse_mode="Markdown",
+        reply_markup=_forcesub_keyboard(),
+    )
+
+
+async def forcesub_cb(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not await _is_admin(update, context):
+        return
+    if query.data == "forcesub:on":
+        _set_cfg_value("force_sub_enabled", True)
+    elif query.data == "forcesub:off":
+        _set_cfg_value("force_sub_enabled", False)
+    try:
+        await query.edit_message_text(
+            _forcesub_status_text(),
+            parse_mode="Markdown",
+            reply_markup=_forcesub_keyboard(),
+        )
+    except Exception:
+        pass
+
+
+async def _is_force_sub_ok(context, user_id: int) -> bool:
+    """True if force-sub is off, the check passes, or the check can't be made."""
+    if not _force_sub_enabled():
+        return True
+    channel = _force_sub_channel()
+    if not channel:
+        return True
+    try:
+        member = await context.bot.get_chat_member(f"@{channel}", user_id)
+        return member.status in ("creator", "administrator", "member")
+    except Exception as e:
+        logging.warning(f"[forcesub] membership check failed for {user_id}: {e}")
+        return True
+
+
+async def _enforce_force_sub(update, context) -> bool:
+    """Block a user from searching/downloading until they join the channel.
+    Returns True if the user may proceed."""
+    if not _force_sub_enabled():
+        return True
+    user = update.effective_user
+    if not user:
+        return True
+    if await _is_force_sub_ok(context, user.id):
+        return True
+
+    channel = _force_sub_channel()
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel}"),
+        InlineKeyboardButton("✅ Joined", callback_data="forcesub:check"),
+    ]])
+
+    target = None
+    if update.effective_message:
+        target = update.effective_message
+    elif update.callback_query is not None and update.callback_query.message:
+        target = update.callback_query.message
+    try:
+        if target is not None:
+            await target.reply_text(
+                f"🔒 *Force Subscribe Required*\n\n"
+                f"You must join our channel to use this bot:\n"
+                f"👉 @{channel}\n\n"
+                f"After joining, tap *✅ Joined* to verify.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+    except Exception as e:
+        logging.warning(f"[forcesub] failed to send prompt: {e}")
+    return False
+
+
+async def forcesub_check_cb(update, context):
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    if not _force_sub_enabled():
+        try:
+            await query.edit_message_text(
+                "✅ Force subscribe is currently *OFF*. You're free to use the bot.",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+        return
+
+    channel = _force_sub_channel()
+    try:
+        member = await context.bot.get_chat_member(f"@{channel}", user.id)
+        ok = member.status in ("creator", "administrator", "member")
+    except Exception as e:
+        logging.warning(f"[forcesub] check failed for {user.id}: {e}")
+        ok = True
+
+    if ok:
+        try:
+            await query.edit_message_text(
+                f"✅ Verified! You are subscribed to `@{channel}`.\n\nNow send your book request again.",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+    else:
+        await query.answer("❌ You haven't joined the channel yet. Join first, then tap again.", show_alert=True)
+
+
+async def cmd_stats(update, context):
+    _register_pm_if_private(update)
+
+    user_count = len(_pm_users_cache)
+    if users_col is not None:
+        try:
+            db_count = users_col.count_documents({})
+            if db_count and db_count > user_count:
+                user_count = db_count
+        except Exception:
+            pass
+
+    await update.message.reply_text(
+        "*📊 Bot Statistics*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 👥 Registered Users: `{user_count}`\n"
+        f"• 📚 Files in library: `64,000,000+`\n"
+        f"• 💾 Total Data: `1.1 PB`",
+        parse_mode="Markdown",
     )
 
 
@@ -2271,6 +2493,9 @@ async def cmd_removedb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_dbsearch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _register_pm_if_private(update)
+    if not await _enforce_force_sub(update, context):
+        return
+
     if not _is_service_enabled():
         await update.message.reply_text("🔴 Bot service is currently offline.")
         return
@@ -2331,6 +2556,9 @@ async def _send_db_results(update: Update, context: ContextTypes.DEFAULT_TYPE, q
 async def db_result_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    if not await _enforce_force_sub(update, context):
+        return
 
     data = query.data
 
@@ -2587,6 +2815,9 @@ async def msg_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _run_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
+    if not await _enforce_force_sub(update, context):
+        return
+
     if update.effective_chat.type == "private":
         pm_search = _get_cfg_value("pm_search", True)
         if not pm_search:
@@ -2705,6 +2936,9 @@ async def _run_online_search(update: Update, context: ContextTypes.DEFAULT_TYPE,
 # ---------------------------------------------------------------------------
 
 async def _process_md5_download(md5: str, update: Update, context: ContextTypes.DEFAULT_TYPE, book: dict = None):
+    if not await _enforce_force_sub(update, context):
+        return
+
     chat_id = update.effective_chat.id
     clicker_id = update.effective_user.id
     loop = asyncio.get_running_loop()
@@ -3134,6 +3368,7 @@ def main():
     app.add_handler(CommandHandler("help", wrap_gated(cmd_help)))
     app.add_handler(CommandHandler("status", wrap_gated(cmd_status)))
     app.add_handler(CommandHandler("search", wrap_gated(cmd_search), block=False))
+    app.add_handler(CommandHandler("stats", wrap_gated(cmd_stats)))
 
     # Admin commands
     app.add_handler(CommandHandler("mode", wrap_gated(cmd_mode)))
@@ -3151,6 +3386,11 @@ def main():
     app.add_handler(CommandHandler("pm_search", wrap_gated(cmd_pm_search)))
     app.add_handler(CommandHandler("read", wrap_gated(cmd_read)))
     app.add_handler(CommandHandler("broadcast", wrap_gated(cmd_broadcast)))
+    app.add_handler(CommandHandler("forcesub", wrap_gated(cmd_forcesub)))
+
+    # Force-subscribe callbacks (admin toggle + user verify)
+    app.add_handler(CallbackQueryHandler(forcesub_cb, pattern=r'^forcesub:(on|off)$'))
+    app.add_handler(CallbackQueryHandler(forcesub_check_cb, pattern=r'^forcesub:check$'))
 
     # Database source commands
     app.add_handler(CommandHandler("connectdb", wrap_gated(cmd_connectdb, allow_connect=True)))
